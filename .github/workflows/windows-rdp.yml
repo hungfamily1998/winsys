@@ -1,51 +1,70 @@
-name: Ubuntu Remote Desktop with Tailscale
+name: Ubuntu Cloud RDP
 
 on:
-  # 允許在 GitHub 網頁上手動點擊執行（建議使用此方式觸發）
-  workflow_dispatch:
+  workflow_dispatch:     # 允許手動點擊按鈕觸發
 
 jobs:
-  remote-access:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-latest # 使用最新的 Ubuntu 雲端環境
+    timeout-minutes: 360   # GitHub 免費版單次任務最長支援 360 分鐘（6 小時）
+
     steps:
-    
-    # 步驟 1：更新系統並安裝 Ubuntu 桌面環境與 XRDP 遠端桌面服務
-    - name: Install Ubuntu Desktop and XRDP
-      run: |
-        sudo apt-get update
-        # 安裝輕量化桌面（xfce4）以確保在虛擬機中流暢運行，並安裝 xrdp
-        sudo apt-get install -y xfce4 xfce4-goodies xrdp
-        # 設定 xrdp 使用 xfce4 桌面
-        echo "xfce4-session" > ~/.xsession
-        # 重啟並啟用 xrdp 服務
-        sudo systemctl restart xrdp
-        sudo systemctl enable xrdp
+      - name: 1. Install Ubuntu Desktop & XRDP
+        run: |
+          # 更新系統套件清單
+          sudo apt-get update
+          
+          # 安裝 XFCE4 輕量化桌面環境與相關組件（避免安裝完整的 Ubuntu 桌面以節省時間）
+          sudo apt-get install -y xfce4 xfce4-goodies xorg dbus-x11 x11-xserver-utils
+          
+          # 安裝 XRDP 遠端桌面伺服器
+          sudo apt-get install -y xrdp
+          
+          # 設定 XRDP 使用 XFCE 作為預設桌面系統
+          sudo sed -i.bak '/fi/a #xrdp check\nstartxfce4\n' /etc/xrdp/startwm.sh
+          
+          # 將 xrdp 用戶加入 ssl-cert 群組，避免證書權限問題導致黑畫面
+          sudo adduser xrdp ssl-cert
+          
+          # 重啟 XRDP 服務使設定生效
+          sudo systemctl restart xrdp
 
-    # 步驟 2：建立 root 密碼（符合您要求的密碼：34erdfcv）
-    - name: Set root Password
-      run: |
-        echo "root:34erdfcv" | sudo chpasswd
+      - name: 2. Create User Account
+        run: |
+          # 建立一個名為 "ubuntu-user" 的新用戶，並設定密碼為 "P@ssw0rd1qazXSW@#"
+          sudo useradd -m -s /bin/bash ubuntu-user
+          echo "ubuntu-user:P@ssw0rd1qazXSW@#" | sudo chpasswd
+          
+          # 將該用戶加入 sudo 群組，使其擁有管理員權限
+          sudo usermod -aG sudo ubuntu-user
+          
+          # 允許該用戶在遠端連線時啟動 XFCE 桌面
+          echo "startxfce4" > ~/.xsession
+          chmod +x ~/.xsession
 
-    # 步驟 3：安裝 Tailscale
-    - name: Install Tailscale
-      run: |
-        curl -fsSL https://tailscale.com | sh
+      - name: 3. Connect Tailscale VPN
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          hostname: github-ubuntu-rdp
 
-    # 步驟 4：使用 Auth Key 啟動並加入 Tailscale 網路
-    # 注意：基於安全性，強烈建議將您的 Tailscale Auth Key 放入 GitHub Secrets 中 (變數名：TAILSCALE_AUTH_KEY)
-    - name: Connect to Tailscale
-      run: |
-        # 使用您提供的 Auth key 進行驗證並啟動服務
-        # 如果您已設定 GitHub Secrets，可將下方替換為：sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }}
-        sudo tailscale up --authkey="tskey-auth-kown3BHha711CNTRL-pgahV27BLU8nRCeyNmeLU8k9cW3wHTsbe" --accept-routes
+      - name: 4. Display Connection Info
+        run: |
+          # 獲取 Tailscale 分配給此機器的 IPv4 位址
+          TS_IP=$(tailscale ip -4)
+          
+          echo "=========================================="
+          echo "  >>> UBUNTU RDP SERVER IS READY! <<<"
+          echo "  Tailscale IP : $TS_IP"
+          echo "  Username     : ubuntu-user"
+          echo "  Password     : P@ssw0rd1qazXSW@#"
+          echo "  >> Open Windows 'mstsc' and connect to: $TS_IP"
+          echo "=========================================="
 
-    # 步驟 5：顯示 Tailscale 分配的 IP 地址（用於 Win11 遠端桌面連線）
-    - name: Display Tailscale IP for Connection
-      run: |
-        echo "=================================================="
-        echo "微軟遠端桌面 (RDP) 連線資訊："
-        echo "連線位址 (IP): $(tailscale ip -4)"
-        echo "登入帳號 (ID): root"
-        echo "登入密碼 (Password): 34erdfcv"
-        echo "=================================================="
-
+      - name: 5. Keep Server Alive (6 Hours)
+        run: |
+          # 每 60 秒輸出一次日誌，持續 360 分鐘，防止 GitHub 因無輸出而判定任務掛掉
+          for i in {1..360}; do
+            sleep 60
+            echo "[$i/360] Ubuntu RDP Server is still running..."
+          done
