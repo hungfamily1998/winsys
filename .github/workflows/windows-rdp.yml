@@ -1,56 +1,51 @@
-name: Windows Cloud RDP
+name: Ubuntu Remote Desktop with Tailscale
 
 on:
+  # 允許在 GitHub 網頁上手動點擊執行（建議使用此方式觸發）
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: windows-latest
-    timeout-minutes: 360
-
+  remote-access:
+    runs-on: ubuntu-latest
     steps:
-      - name: 1. Enable Remote Desktop & Firewall
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+    
+    # 步驟 1：更新系統並安裝 Ubuntu 桌面環境與 XRDP 遠端桌面服務
+    - name: Install Ubuntu Desktop and XRDP
+      run: |
+        sudo apt-get update
+        # 安裝輕量化桌面（xfce4）以確保在虛擬機中流暢運行，並安裝 xrdp
+        sudo apt-get install -y xfce4 xfce4-goodies xrdp
+        # 設定 xrdp 使用 xfce4 桌面
+        echo "xfce4-session" > ~/.xsession
+        # 重啟並啟用 xrdp 服務
+        sudo systemctl restart xrdp
+        sudo systemctl enable xrdp
 
-      - name: 2. Create Admin Account
-        run: |
-          $Password = ConvertTo-SecureString "P@ssw0rd1qazXSW@#" -AsPlainText -Force
-          New-LocalUser -Name "NvdAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Administrators" -Member "NvdAdmin" -ErrorAction SilentlyContinue
-          net user runneradmin P@ssw0rd1qazXSW@#
+    # 步驟 2：建立 root 密碼（符合您要求的密碼：34erdfcv）
+    - name: Set root Password
+      run: |
+        echo "root:34erdfcv" | sudo chpasswd
 
-      - name: 3. Install & Connect Tailscale VPN
-        env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
-        run: |
-          # Download and install Tailscale silently
-          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
-          Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
+    # 步驟 3：安裝 Tailscale
+    - name: Install Tailscale
+      run: |
+        curl -fsSL https://tailscale.com | sh
 
-          # Connect to Tailscale network
-          Start-Sleep -Seconds 5
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
+    # 步驟 4：使用 Auth Key 啟動並加入 Tailscale 網路
+    # 注意：基於安全性，強烈建議將您的 Tailscale Auth Key 放入 GitHub Secrets 中 (變數名：TAILSCALE_AUTH_KEY)
+    - name: Connect to Tailscale
+      run: |
+        # 使用您提供的 Auth key 進行驗證並啟動服務
+        # 如果您已設定 GitHub Secrets，可將下方替換為：sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }}
+        sudo tailscale up --authkey="tskey-auth-kown3BHha711CNTRL-pgahV27BLU8nRCeyNmeLU8k9cW3wHTsbe" --accept-routes
 
-          Start-Sleep -Seconds 8
+    # 步驟 5：顯示 Tailscale 分配的 IP 地址（用於 Win11 遠端桌面連線）
+    - name: Display Tailscale IP for Connection
+      run: |
+        echo "=================================================="
+        echo "微軟遠端桌面 (RDP) 連線資訊："
+        echo "連線位址 (IP): $(tailscale ip -4)"
+        echo "登入帳號 (ID): root"
+        echo "登入密碼 (Password): 34erdfcv"
+        echo "=================================================="
 
-          # Get Tailscale IP
-          $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-
-          Write-Host ""
-          Write-Host "==========================================" -ForegroundColor Green
-          Write-Host "  >>> RDP SERVER IS READY! <<<" -ForegroundColor Cyan
-          Write-Host "  Tailscale IP : $ts_ip" -ForegroundColor Yellow
-          Write-Host "  Username     : NvdAdmin" -ForegroundColor Yellow
-          Write-Host "  Password     : P@ssw0rd1qazXSW@#" -ForegroundColor Yellow
-          Write-Host "  >> Open mstsc and connect to: $ts_ip" -ForegroundColor Magenta
-          Write-Host "==========================================" -ForegroundColor Green
-
-      - name: 4. Keep Server Alive (48 Hours)
-        run: |
-          for ($i = 1; $i -le 2880; $i++) {
-              Start-Sleep -Seconds 60
-              Write-Host "[$i/2880] Server running..."
-          }
