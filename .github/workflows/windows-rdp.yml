@@ -1,70 +1,57 @@
-name: Ubuntu Cloud RDP
+name: Windows Cloud RDP
 
 on:
-  workflow_dispatch:     # 允許手動點擊按鈕觸發
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest # 使用最新的 Ubuntu 雲端環境
-    timeout-minutes: 360   # GitHub 免費版單次任務最長支援 360 分鐘（6 小時）
+    runs-on: windows-latest
+    timeout-minutes: 360
 
     steps:
-      - name: 1. Install Ubuntu Desktop & XRDP
+      - name: 1. Enable Remote Desktop & Firewall
         run: |
-          # 更新系統套件清單
-          sudo apt-get update
-          
-          # 安裝 XFCE4 輕量化桌面環境與相關組件（避免安裝完整的 Ubuntu 桌面以節省時間）
-          sudo apt-get install -y xfce4 xfce4-goodies xorg dbus-x11 x11-xserver-utils
-          
-          # 安裝 XRDP 遠端桌面伺服器
-          sudo apt-get install -y xrdp
-          
-          # 設定 XRDP 使用 XFCE 作為預設桌面系統
-          sudo sed -i.bak '/fi/a #xrdp check\nstartxfce4\n' /etc/xrdp/startwm.sh
-          
-          # 將 xrdp 用戶加入 ssl-cert 群組，避免證書權限問題導致黑畫面
-          sudo adduser xrdp ssl-cert
-          
-          # 重啟 XRDP 服務使設定生效
-          sudo systemctl restart xrdp
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
 
-      - name: 2. Create User Account
+      - name: 2. Create Admin Account
         run: |
-          # 建立一個名為 "ubuntu-user" 的新用戶，並設定密碼為 "P@ssw0rd1qazXSW@#"
-          sudo useradd -m -s /bin/bash ubuntu-user
-          echo "ubuntu-user:P@ssw0rd1qazXSW@#" | sudo chpasswd
-          
-          # 將該用戶加入 sudo 群組，使其擁有管理員權限
-          sudo usermod -aG sudo ubuntu-user
-          
-          # 允許該用戶在遠端連線時啟動 XFCE 桌面
-          echo "startxfce4" > ~/.xsession
-          chmod +x ~/.xsession
+          $Password = ConvertTo-SecureString "P@ssw0rd1qazXSW@#" -AsPlainText -Force
+          New-LocalUser -Name "NvdAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "NvdAdmin" -ErrorAction SilentlyContinue
+          net user runneradmin P@ssw0rd1qazXSW@#
 
-      - name: 3. Connect Tailscale VPN
-        uses: tailscale/github-action@v2
-        with:
-          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
-          hostname: github-ubuntu-rdp
-
-      - name: 4. Display Connection Info
+      - name: 3. Install & Connect Tailscale VPN
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          # 獲取 Tailscale 分配給此機器的 IPv4 位址
-          TS_IP=$(tailscale ip -4)
-          
-          echo "=========================================="
-          echo "  >>> UBUNTU RDP SERVER IS READY! <<<"
-          echo "  Tailscale IP : $TS_IP"
-          echo "  Username     : ubuntu-user"
-          echo "  Password     : P@ssw0rd1qazXSW@#"
-          echo "  >> Open Windows 'mstsc' and connect to: $TS_IP"
-          echo "=========================================="
+          # Download and install Tailscale silently
+          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
+          Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
 
-      - name: 5. Keep Server Alive (6 Hours)
+          # Connect to Tailscale network
+          Start-Sleep -Seconds 5
+          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
+
+          Start-Sleep -Seconds 8
+
+          # Get Tailscale IP
+          $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+
+          Write-Host ""
+          Write-Host "==========================================" -ForegroundColor Green
+          Write-Host "  >>> RDP SERVER IS READY! <<<" -ForegroundColor Cyan
+          Write-Host "  Tailscale IP : $ts_ip" -ForegroundColor Yellow
+          Write-Host "  Username     : NvdAdmin" -ForegroundColor Yellow
+          Write-Host "  Password     : P@ssw0rd1qazXSW@#" -ForegroundColor Yellow
+          Write-Host "  >> Open mstsc and connect to: $ts_ip" -ForegroundColor Magenta
+          Write-Host "==========================================" -ForegroundColor Green
+
+      - name: 4. Keep Server Alive (48 Hours)
         run: |
-          # 每 60 秒輸出一次日誌，持續 360 分鐘，防止 GitHub 因無輸出而判定任務掛掉
-          for i in {1..360}; do
-            sleep 60
-            echo "[$i/360] Ubuntu RDP Server is still running..."
-          done
+          for ($i = 1; $i -le 2880; $i++) {
+              Start-Sleep -Seconds 60
+              Write-Host "[$i/2880] Server running..."
+          }
+          
